@@ -5,15 +5,25 @@ import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
+import { useHandoverStore } from '../stores/handoverStore';
+import { useRepairer } from '../hooks/useRepairer';
 import { useRepairProgress } from '../hooks/useRepairProgress';
 import StepSequence from '../components/common/StepSequence.vue';
-import { STEP_FIELD_MAP, STEP_TYPES, type RepairStepDraft, type StepType } from '../types/step';
+import {
+  SeqConflictError,
+  STEP_FIELD_MAP,
+  STEP_TYPES,
+  type RepairStepDraft,
+  type StepType,
+} from '../types/step';
 
 const route = useRoute();
 const router = useRouter();
 const clockStore = useClockStore();
 const partStore = usePartStore();
 const stepStore = useStepStore();
+const handoverStore = useHandoverStore();
+const { repairer } = useRepairer();
 
 const clockId = ref(String(route.query.clockId ?? ''));
 const { steps, total, percent, current, gaps } = useRepairProgress(clockId);
@@ -32,11 +42,13 @@ const form = reactive<RepairStepDraft>({
   torque: 0.5,
   troubleNote: '',
   operator: '',
+  claimOwner: '',
   startedAt: Date.now(),
   state: 'pending',
 });
 
 const error = ref('');
+const claimingId = ref('');
 const fields = computed(() => STEP_FIELD_MAP[form.stepType as StepType]);
 
 watch(
@@ -66,22 +78,42 @@ async function submit() {
     error.value = '责任人必填';
     return;
   }
-  const used = steps.value.map((s) => s.seq);
-  if (used.includes(form.seq)) {
-    error.value = `顺序号 ${form.seq} 已被占用，请改用 ${nextSeq.value}`;
-    return;
+  try {
+    const created = await stepStore.add({ ...form, clockId: clockId.value, startedAt: Date.now() });
+    ElMessage.success(`已追加步骤 #${created.seq} ${created.stepType}，由 ${created.claimOwner} 接走；旧走时测试已作废`);
+    form.troubleNote = '';
+    form.partIds = [];
+  } catch (err) {
+    if (err instanceof SeqConflictError) {
+      error.value =
+        err.kind === 'occupied'
+          ? `顺序号 ${err.seq} 已被并发占用，请改用 ${err.suggested}`
+          : `顺序号跳号：必须使用 ${err.suggested}`;
+      return;
+    }
+    throw err;
   }
-  if (form.seq > nextSeq.value) {
-    error.value = `顺序号跳号：当前最大顺序号为 ${Math.max(0, nextSeq.value - 1)}，新步骤必须用 ${nextSeq.value}`;
-    return;
-  }
-  const created = await stepStore.add({ ...form, clockId: clockId.value, startedAt: Date.now() });
-  ElMessage.success(`已追加步骤 #${created.seq} ${created.stepType}`);
-  form.operator = '';
-  form.troubleNote = '';
-  form.partIds = [];
 }
 
+async function claim(id: string) {
+  if (!repairer.value.trim()) {
+    ElMessage.warning('请先在右上角填写当前修复师姓名，再认领工序');
+    return;
+  }
+  claimingId.value = id;
+  try {
+    const result = await handoverStore.request(id, repairer.value);
+    if (result.ok) {
+      ElMessage.success(`交接完成：工序已由 ${result.owner} 接走，开始时间保持不变`);
+    } else if (result.conflict) {
+      ElMessage.warning(`晚了一步——工序已被「${result.owner}」接走`);
+    } else {
+      ElMessage.error(`交接写入失败：${result.error}；可在顶部横幅恢复这次交接`);
+    }
+  } finally {
+    claimingId.value = '';
+  }
+}
 async function finish(id: string) {
   await stepStore.finish(id);
   ElMessage.success('步骤已完成');
@@ -95,6 +127,7 @@ onMounted(async () => {
   await clockStore.load();
   await partStore.load();
   await stepStore.load();
+  await handoverStore.load();
   if (!clockId.value && clockStore.items.length > 0) {
     clockId.value = clockStore.items[0].id;
   }
@@ -188,7 +221,7 @@ onMounted(async () => {
             <span v-else class="muted">全部完成</span>
           </div>
         </template>
-        <StepSequence :items="steps" @finish="finish" @rollback="rollback" />
+        <StepSequence :items="steps" :claiming-id="claimingId" @claim="claim" @finish="finish" @rollback="rollback" />
       </el-card>
     </div>
   </div>

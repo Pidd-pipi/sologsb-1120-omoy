@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { readDbVersion } from './utils/db';
+import { useRepairer } from './hooks/useRepairer';
+import { useRemoteSync } from './hooks/useRemoteSync';
+import { useHandoverStore } from './stores/handoverStore';
+import HandoverRecovery from './components/common/HandoverRecovery.vue';
 
 const route = useRoute();
 const router = useRouter();
+const { repairer, setRepairer } = useRepairer();
+const handoverStore = useHandoverStore();
+
+useRemoteSync();
 
 const activeMenu = computed(() => {
   if (route.path.startsWith('/clocks')) return '/clocks';
@@ -23,6 +31,12 @@ function onSelect(index: string) {
   }
   void router.push(index);
 }
+
+onMounted(async () => {
+  await handoverStore.load();
+  // 上次认领写入失败后重开：自动尝试恢复这些交接
+  await handoverStore.recoverAllPending();
+});
 </script>
 
 <template>
@@ -35,9 +49,21 @@ function onSelect(index: string) {
         <el-menu-item index="/parts">零件清单</el-menu-item>
         <el-menu-item index="/tests">走时测试</el-menu-item>
       </el-menu>
+      <div class="repairer">
+        <span class="repairer-label">当前修复师</span>
+        <el-input
+          :model-value="repairer"
+          size="small"
+          placeholder="姓名"
+          clearable
+          style="width: 120px"
+          @update:model-value="setRepairer"
+        />
+      </div>
       <el-tag size="small" effect="plain">本地结构版本 v{{ version }}</el-tag>
     </el-header>
     <el-main class="app-main">
+      <HandoverRecovery />
       <router-view />
     </el-main>
   </el-container>
@@ -72,6 +98,16 @@ function onSelect(index: string) {
 :deep(.menu .el-menu-item.is-active) {
   color: #ffffff;
   border-bottom-color: #e7c56b;
+}
+.repairer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.repairer-label {
+  font-size: 13px;
+  color: #c6ced8;
 }
 .app-main {
   padding: 18px 22px 40px;

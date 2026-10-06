@@ -29,9 +29,18 @@ export interface TimekeepingTest {
   /** 动力储备 h */
   powerReserve: number;
   conclusion: string;
+  /**
+   * 是否已作废：工序一经改动（新增/认领/完成/回退/换序），
+   * 之前的走时测试全部作废，需要复测；重新测试后再录新单。
+   */
+  voided: boolean;
+  /** 作废时间 */
+  voidedAt?: number;
+  /** 作废原因（触发作废的工序动作） */
+  voidReason?: string;
 }
 
-export type TimekeepingTestDraft = Omit<TimekeepingTest, 'id'>;
+export type TimekeepingTestDraft = Omit<TimekeepingTest, 'id' | 'voided' | 'voidedAt' | 'voidReason'>;
 
 /** 走时合格判定 */
 export function judgeTest(rate: number, beatError: number, amplitude: number): string {

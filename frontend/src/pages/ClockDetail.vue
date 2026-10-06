@@ -5,6 +5,8 @@ import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
+import { useHandoverStore } from '../stores/handoverStore';
+import { useRepairer } from '../hooks/useRepairer';
 import { useRepairProgress } from '../hooks/useRepairProgress';
 import StepSequence from '../components/common/StepSequence.vue';
 import RateChart from '../components/common/RateChart.vue';
@@ -17,6 +19,8 @@ const router = useRouter();
 const clockStore = useClockStore();
 const partStore = usePartStore();
 const stepStore = useStepStore();
+const handoverStore = useHandoverStore();
+const { repairer } = useRepairer();
 
 const clockId = computed(() => String(route.params.id ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
@@ -24,14 +28,38 @@ const { progress, steps, done, total, percent, current, gaps } = useRepairProgre
 const parts = computed(() => partStore.byClock(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
 const activeTab = ref('steps');
+const claimingId = ref('');
 
+async function claim(id: string) {
+  if (!repairer.value.trim()) {
+    ElMessage.warning('请先在右上角填写当前修复师姓名，再认领工序');
+    return;
+  }
+  claimingId.value = id;
+  try {
+    const result = await handoverStore.request(id, repairer.value);
+    if (result.ok) {
+      ElMessage.success(`交接完成：工序已由 ${result.owner} 接走，开始时间保持不变`);
+      if (result.voidedTests > 0) {
+        ElMessage.warning(`工序已改动，${result.voidedTests} 次旧走时测试作废，需要复测`);
+      }
+    } else if (result.conflict) {
+      ElMessage.warning(`晚了一步——工序已被「${result.owner}」接走`);
+    } else {
+      ElMessage.error(`交接写入失败：${result.error}；可在顶部横幅恢复这次交接`);
+    }
+  } finally {
+    claimingId.value = '';
+  }
+}
 async function finish(id: string) {
   await stepStore.finish(id);
   ElMessage.success('步骤已完成');
+  ElMessage.warning('工序改动已使旧走时测试作废，需要复测');
 }
 async function rollback(id: string) {
   await stepStore.rollback(id);
-  ElMessage.warning('步骤已回退');
+  ElMessage.warning('步骤已回退，旧走时测试已作废');
 }
 async function move(payload: { id: string; direction: 'up' | 'down' }) {
   const list = steps.value;
@@ -39,11 +67,11 @@ async function move(payload: { id: string; direction: 'up' | 'down' }) {
   const target = payload.direction === 'up' ? list[index - 1] : list[index + 1];
   if (!target) return;
   await stepStore.swapSeq(payload.id, target.id);
-  ElMessage.success('顺序已调整');
+  ElMessage.success('顺序已调整，旧走时测试已作废');
 }
 async function reorder(payload: { fromId: string; toId: string }) {
   await stepStore.swapSeq(payload.fromId, payload.toId);
-  ElMessage.success('已按拖拽交换顺序');
+  ElMessage.success('已按拖拽交换顺序，旧走时测试已作废');
 }
 async function changeGrade(value: unknown) {
   const grade = String(value) as ConditionGrade;
@@ -55,6 +83,7 @@ onMounted(async () => {
   await clockStore.load();
   await partStore.load();
   await stepStore.load();
+  await handoverStore.load();
 });
 </script>
 
@@ -104,7 +133,7 @@ onMounted(async () => {
               <strong>修复进度</strong>
               <el-tag size="small">{{ done }}/{{ total }} · {{ percent }}%</el-tag>
               <span v-if="current" class="muted">
-                当前卡点：#{{ current.seq }} {{ current.stepType }}（{{ current.operator }}）
+                当前卡点：#{{ current.seq }} {{ current.stepType }}（{{ current.claimOwner || '待认领' }}）
               </span>
               <span v-else class="muted">全部步骤已完成</span>
             </div>
@@ -115,6 +144,8 @@ onMounted(async () => {
               <StepSequence
                 :items="steps"
                 sortable
+                :claiming-id="claimingId"
+                @claim="claim"
                 @finish="finish"
                 @rollback="rollback"
                 @move="move"
@@ -133,11 +164,21 @@ onMounted(async () => {
               <el-empty v-if="parts.length === 0" description="暂无零件登记" :image-size="60" />
             </el-tab-pane>
             <el-tab-pane :label="`走时测试（${tests.length}）`" name="tests">
-              <div v-for="t in tests" :key="t.id" class="test-block">
+              <el-alert
+                v-if="tests.some((t) => t.voided)"
+                type="warning"
+                :closable="false"
+                show-icon
+                title="工序改动后旧走时测试已作废，请复测并录入新走时单"
+                style="margin-bottom: 10px"
+              />
+              <div v-for="t in tests" :key="t.id" class="test-block" :class="{ voided: t.voided }">
                 <div class="card-head">
                   <strong>{{ new Date(t.testedAt).toLocaleString('zh-CN') }}</strong>
-                  <el-tag size="small" type="success">{{ t.conclusion || judgeTest(t.rate, t.beatError, t.amplitude) }}</el-tag>
+                  <el-tag v-if="t.voided" size="small" type="info">已作废 · 待复测</el-tag>
+                  <el-tag v-else size="small" type="success">{{ t.conclusion || judgeTest(t.rate, t.beatError, t.amplitude) }}</el-tag>
                   <span class="muted">日差 {{ t.rate }} s/d · 摆幅 {{ t.amplitude }}° · 偏振 {{ t.beatError }} ms</span>
+                  <span v-if="t.voidReason" class="muted">作废原因：{{ t.voidReason }}</span>
                 </div>
                 <RateChart :readings="t.positions" />
               </div>
@@ -195,5 +236,8 @@ onMounted(async () => {
 }
 .test-block {
   margin-bottom: 16px;
+}
+.test-block.voided {
+  opacity: 0.55;
 }
 </style>

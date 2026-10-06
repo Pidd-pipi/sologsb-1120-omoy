@@ -58,12 +58,12 @@ sologsb-1120/
         ├── main.ts
         ├── App.vue
         ├── router/index.ts
-        ├── types/{clock,part,step,test}.ts
-        ├── stores/{clock,part,step}Store.ts
-        ├── components/common/{StepSequence,RateChart,ClockCard,StateBadge}.vue
-        ├── hooks/{useClockSearch,useRepairProgress}.ts
+        ├── types/{clock,part,step,test,handover}.ts
+        ├── stores/{clock,part,step,handoverStore}.ts
+        ├── components/common/{StepSequence,RateChart,ClockCard,StateBadge,HandoverRecovery}.vue
+        ├── hooks/{useClockSearch,useRepairProgress,useRepairer,useRemoteSync}.ts
         ├── pages/{ClockList,ClockDetail,StepForm,PartList,TestView}.vue
-        └── utils/{db,timeCalc,id}.ts
+        └── utils/{db,timeCalc,id,sync}.ts
 ```
 
 ## 页面与路由
@@ -80,16 +80,21 @@ sologsb-1120/
 
 ## 数据存储说明
 
-- 数据库名 `gbclockrepair`，当前结构版本 **v2**（`localStorage['gbclockrepair:db-version']` 记录）。
-- 四张表：`clocks`（钟表）、`parts`（机芯零件）、`steps`（维修工序）、`tests`（走时测试）。
+- 数据库名 `gbclockrepair`，当前结构版本 **v3**（`localStorage['gbclockrepair:db-version']` 记录）。
+- 五张表：`clocks`（钟表）、`parts`（机芯零件）、`steps`（维修工序，新增 `claimOwner` 索引）、`tests`（走时测试，新增 `voided` 索引）、`handovers`（工序交接意图箱）。
 - v1 → v2 迁移：补齐老记录的 `state`、`partIds`、`torque`、`positions` 字段并新增索引。
+- v2 → v3 迁移：旧工序还没有认领人的，按原责任人 `operator` 补回 `claimOwner`（不改 `startedAt`、不伪造 `claimedAt`）；旧走时测试补 `voided=false`；建立 `handovers` 表。
 - 容器无状态、不挂载命名卷；清空站点数据即回到初始示范数据。
 - 首次打开灌入 2 台示范钟表、3 项零件、3 道工序与 1 次走时测试。
 
 ## 功能要点
 
-- **顺序号不跳号**：新建工序时若顺序号大于「当前最大顺序号 + 1」直接报错并给出建议值；`<StepSequence>` 对缺口行标红。
+- **互斥工序交接**：两道修复台即同源两个标签页，共享同一 IndexedDB。认领在单个 `rw` 事务内「读 `claimOwner` → 判空 → 写」，浏览器对同源写事务串行化，构成比较并交换（CAS）：同一工序只会被一人接走，晚到方收到明确冲突并看到接走人；认领只写 `claimOwner/claimedAt`，**开始时间 `startedAt` 始终不动**。
+- **交接意图箱（失败恢复）**：认领前先以独立事务往 `handovers` 写一条 `pending` 意图，再执行业务认领。业务写入若中断（掉电、标签页被杀），意图保留，重开应用自动恢复，也可用顶部横幅「一键恢复 / 重试」；已被他人接走的置 `failed` 终态，同一人重复提交幂等成功。
+- **工序改动 → 走时作废联动**：新增工序、认领、完成、回退、调整顺序，都在与工序写入**同一事务**内把该钟仍有效的走时测试置 `voided`（带 `voidedAt/voidReason`）。台账分栏随之从「已完成」掉回「待测试」，钟表详情与走时单页标「已作废 · 待复测」；复测录入后重新计入有效。
+- **跨台实时同步**：`BroadcastChannel` 通知其他标签页重载数据，一方认领或改动后另一界面立刻刷新；不支持时在页面重新可见时兜底刷新。
+- **顺序号不跳号**：新建工序时顺序号占用/跳号校验下沉到写库事务内（`SeqConflictError`），并发下也不会被后写覆盖；`<StepSequence>` 对缺口行标红。
 - **工序排序**：支持「上移 / 下移」按钮与原生拖拽交换顺序，交换的是 `seq`。
 - **工序完成 / 回退**：完成后写 `finishedAt`，回退后计入待办与回退计数。
 - **双轴走时图**：`<RateChart>` 左轴日差 s/d、右轴摆幅 °，标注四方位读数与均值。
-- **走时单导出**：按方位均值生成文本，可复制或下载 txt。
+- **走时单导出**：按方位均值生成文本（复测单会标注前次作废原因），可复制或下载 txt。

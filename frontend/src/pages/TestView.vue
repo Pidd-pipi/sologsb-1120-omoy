@@ -17,6 +17,13 @@ const stepStore = useStepStore();
 const clockId = ref(String(route.params.clockId ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
+/** 是否存在已作废测试、当前又没有新的有效测试：工序改动后需要复测 */
+const needsRetest = computed(
+  () => tests.value.some((t) => t.voided) && !tests.value.some((t) => !t.voided),
+);
+const latestVoidReason = computed(
+  () => tests.value.find((t) => t.voided)?.voidReason ?? '',
+);
 
 const readings = reactive<PositionReading[]>(
   TEST_POSITIONS.map((position) => ({ position, rate: 0, amplitude: 260, beatError: 0.4 })),
@@ -39,6 +46,7 @@ const workSheet = computed(() => {
   lines.push('走时测试单');
   lines.push(`藏品号：${clock.value?.clockNo ?? '未知'}（${clock.value?.kind ?? ''} / ${clock.value?.caliber ?? ''}）`);
   lines.push(`测试时间：${new Date().toLocaleString('zh-CN')}`);
+  lines.push(needsRetest.value ? `单据性质：复测单（前次走时测试已作废${latestVoidReason.value ? `：${latestVoidReason.value}` : ''}）` : '单据性质：有效');
   lines.push('');
   lines.push('方位\t日差(s/d)\t摆幅(°)\t偏振(ms)');
   readings.forEach((r) => {
@@ -68,7 +76,7 @@ async function save() {
     powerReserve: powerReserve.value,
     conclusion: conclusion.value,
   });
-  ElMessage.success('走时测试已记录');
+  ElMessage.success(needsRetest.value ? '复测已记录，走时单恢复有效' : '走时测试已记录');
 }
 
 async function copySheet() {
@@ -100,6 +108,10 @@ function reset() {
   customConclusion.value = '';
 }
 
+function rowClass({ row }: { row: { voided?: boolean } }): string {
+  return row.voided ? 'row-voided' : '';
+}
+
 onMounted(async () => {
   await clockStore.load();
   await stepStore.load();
@@ -115,7 +127,8 @@ onMounted(async () => {
     <div class="header">
       <h2>走时测试 · {{ clock?.clockNo ?? '未选择' }}</h2>
       <StateBadge :grade="clock?.conditionGrade" />
-      <el-tag type="info" effect="plain">历史测试 {{ tests.length }} 次</el-tag>
+      <el-tag v-if="needsRetest" type="warning">工序已改动，旧测试作废，待复测</el-tag>
+      <el-tag type="info" effect="plain">有效测试 {{ tests.filter((t) => !t.voided).length }} 次 · 历史 {{ tests.length }} 次</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/clocks/${clockId}`)">返回钟表详情</el-button>
     </div>
@@ -123,6 +136,14 @@ onMounted(async () => {
     <div class="grid">
       <el-card shadow="never">
         <template #header><strong>多方位读数录入</strong></template>
+        <el-alert
+          v-if="needsRetest"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`工序改动后之前的走时测试已作废${latestVoidReason ? `（${latestVoidReason}）` : ''}，请复测并保存新走时单`"
+          style="margin-bottom: 12px"
+        />
         <el-table :data="readings" size="small" border>
           <el-table-column prop="position" label="方位" width="90" />
           <el-table-column label="日差 s/d" width="150">
@@ -194,7 +215,14 @@ onMounted(async () => {
 
         <el-card shadow="never">
           <template #header><strong>历史测试记录</strong></template>
-          <el-table :data="tests" size="small" border>
+          <el-table :data="tests" size="small" border :row-class-name="rowClass">
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.voided ? 'info' : 'success'">
+                  {{ row.voided ? '已作废' : '有效' }}
+                </el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="时间" width="170">
               <template #default="{ row }">{{ new Date(row.testedAt).toLocaleString('zh-CN') }}</template>
             </el-table-column>
@@ -203,6 +231,9 @@ onMounted(async () => {
             <el-table-column prop="beatError" label="偏振" width="80" />
             <el-table-column prop="powerReserve" label="动储 h" width="90" />
             <el-table-column prop="conclusion" label="结论" min-width="120" />
+            <el-table-column label="作废原因" min-width="160">
+              <template #default="{ row }">{{ row.voidReason || '—' }}</template>
+            </el-table-column>
           </el-table>
           <el-empty v-if="tests.length === 0" description="暂无历史测试" :image-size="60" />
         </el-card>
@@ -259,5 +290,8 @@ onMounted(async () => {
 .card-head {
   display: flex;
   align-items: center;
+}
+:deep(.el-table .row-voided) {
+  opacity: 0.5;
 }
 </style>

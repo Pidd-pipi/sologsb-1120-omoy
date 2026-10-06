@@ -17,13 +17,13 @@ const REPAIR_STATES = ['未开工', '维修中', '待测试', '已完成'] as co
 
 type RepairState = (typeof REPAIR_STATES)[number];
 
-/** 由工序与走时测试推导修复状态，用于台账分栏 */
+/** 由工序与走时测试推导修复状态，用于台账分栏；已作废的走时测试不计入 */
 function repairStateOf(clockId: string): RepairState {
   const steps = stepStore.items.filter((s) => s.clockId === clockId);
-  const tests = stepStore.tests.filter((t) => t.clockId === clockId);
+  const validTests = stepStore.tests.filter((t) => t.clockId === clockId && !t.voided);
   const done = steps.filter((s) => s.state === 'done').length;
   if (steps.length === 0) return '未开工';
-  if (done === steps.length && tests.length > 0) return '已完成';
+  if (done === steps.length && validTests.length > 0) return '已完成';
   if (done === steps.length) return '待测试';
   if (done > 0) return '维修中';
   return '未开工';
@@ -143,9 +143,12 @@ onMounted(() => {
           v-for="item in col.rows"
           :key="item.id"
           :item="item"
-          :footer="`工序 ${stepStore.items.filter((s) => s.clockId === item.id && s.state === 'done').length}/${
-            stepStore.items.filter((s) => s.clockId === item.id).length
-          } · 走时测试 ${stepStore.tests.filter((t) => t.clockId === item.id).length} 次`"
+          :footer="
+            `工序 ${stepStore.items.filter((s) => s.clockId === item.id && s.state === 'done').length}/${
+              stepStore.items.filter((s) => s.clockId === item.id).length
+            } · 有效走时测试 ${stepStore.tests.filter((t) => t.clockId === item.id && !t.voided).length} 次` +
+            (stepStore.tests.some((t) => t.clockId === item.id && t.voided) ? ' · 有待复测' : '')
+          "
           @open="(id) => router.push(`/clocks/${id}`)"
         />
         <el-empty v-if="col.rows.length === 0" description="暂无" :image-size="60" />

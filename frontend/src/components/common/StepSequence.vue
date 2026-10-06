@@ -8,11 +8,14 @@ const props = defineProps<{
   items: RepairStep[];
   /** 是否展示上下移动/拖拽排序 */
   sortable?: boolean;
+  /** 正在提交认领的工序 id（按钮 loading） */
+  claimingId?: string;
 }>();
 
 const emit = defineEmits<{
   (e: 'finish', id: string): void;
   (e: 'rollback', id: string): void;
+  (e: 'claim', id: string): void;
   (e: 'move', payload: { id: string; direction: 'up' | 'down' }): void;
   (e: 'reorder', payload: { fromId: string; toId: string }): void;
 }>();
@@ -49,7 +52,7 @@ function onDrop(toId: string) {
           <span :class="{ gap: conflict && gaps.includes(row.seq) }">#{{ row.seq }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="步骤" width="110">
+      <el-table-column label="步骤" width="100">
         <template #default="{ row }">{{ row.stepType }}</template>
       </el-table-column>
       <el-table-column label="状态" width="100">
@@ -57,7 +60,7 @@ function onDrop(toId: string) {
           <StateBadge :state="row.state" />
         </template>
       </el-table-column>
-      <el-table-column label="清洗/润滑" min-width="200">
+      <el-table-column label="清洗/润滑" min-width="180">
         <template #default="{ row }">
           <div v-if="row.cleanSolvent">清洗液：{{ row.cleanSolvent }}（{{ row.cleanMethod }}）</div>
           <div v-if="row.oilType">油脂：{{ row.oilType }} · 点位 {{ row.oilPoints }}</div>
@@ -65,14 +68,32 @@ function onDrop(toId: string) {
           <div v-if="!row.cleanSolvent && !row.oilType && !row.torque">—</div>
         </template>
       </el-table-column>
-      <el-table-column label="异常说明" min-width="160">
+      <el-table-column label="异常说明" min-width="130">
         <template #default="{ row }">{{ row.troubleNote || '—' }}</template>
       </el-table-column>
-      <el-table-column label="责任人" width="100">
-        <template #default="{ row }">{{ row.operator }}</template>
+      <el-table-column label="责任人 / 认领" width="150">
+        <template #default="{ row }">
+          <div class="owner-cell">
+            <span class="muted">派工：{{ row.operator || '—' }}</span>
+            <el-tag v-if="row.claimOwner" size="small" type="success">
+              {{ row.claimOwner }} 已接走
+            </el-tag>
+            <el-tag v-else size="small" type="warning">待认领</el-tag>
+          </div>
+        </template>
       </el-table-column>
-      <el-table-column label="操作" width="250">
+      <el-table-column label="操作" width="320">
         <template #default="{ row, $index }">
+          <el-button
+            v-if="!row.claimOwner"
+            size="small"
+            type="success"
+            :loading="claimingId === row.id"
+            data-testid="claim-btn"
+            @click="emit('claim', row.id)"
+          >
+            认领交接
+          </el-button>
           <el-button v-if="row.state !== 'done'" size="small" type="primary" @click="emit('finish', row.id)">
             完成
           </el-button>
@@ -109,6 +130,15 @@ function onDrop(toId: string) {
 .gap {
   color: #d93025;
   font-weight: 700;
+}
+.owner-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.muted {
+  color: #7b8592;
+  font-size: 12px;
 }
 .drag-handle {
   margin-left: 8px;

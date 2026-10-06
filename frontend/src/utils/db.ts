@@ -3,10 +3,11 @@ import type { Clock } from '../types/clock';
 import type { MovementPart } from '../types/part';
 import type { RepairStep } from '../types/step';
 import type { TimekeepingTest } from '../types/test';
+import type { Handover } from '../types/handover';
 import { newId } from './id';
 
 export const DB_NAME = 'gbclockrepair';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbclockrepair:db-version';
 
 class ClockRepairDB extends Dexie {
@@ -14,6 +15,7 @@ class ClockRepairDB extends Dexie {
   parts!: Table<MovementPart, string>;
   steps!: Table<RepairStep, string>;
   tests!: Table<TimekeepingTest, string>;
+  handovers!: Table<Handover, string>;
 
   constructor() {
     super(DB_NAME);
@@ -48,6 +50,31 @@ class ClockRepairDB extends Dexie {
             if (row.positions === undefined) row.positions = [];
           });
       });
+    // v3：工序互斥交接（claimOwner 索引）、走时测试作废位（voided 索引）、交接意图箱
+    this.version(3)
+      .stores({
+        clocks: 'id, clockNo, kind, caliber, conditionGrade, createdAt',
+        parts: 'id, clockId, name, wearState, decision, sourceLot',
+        steps: 'id, clockId, seq, stepType, state, startedAt, claimOwner',
+        tests: 'id, clockId, testedAt, conclusion, voided',
+        handovers: 'id, stepId, clockId, owner, status, createdAt',
+      })
+      .upgrade(async (tx) => {
+        // 旧档案的工序还没有认领人：升级后按原责任人（operator）补回，startedAt 不动
+        await tx
+          .table('steps')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.claimOwner === undefined) row.claimOwner = row.operator || '';
+          });
+        // 旧走时测试默认仍有效，由后续工序改动再行作废
+        await tx
+          .table('tests')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.voided === undefined) row.voided = false;
+          });
+      });
   }
 }
 
@@ -76,6 +103,37 @@ export function readDbVersion(): number {
   } catch {
     return DB_VERSION;
   }
+}
+
+/**
+ * 在指定事务内把某台钟表所有仍有效的走时测试置为作废。
+ * 工序一经改动，旧走时测试即失效、必须复测——必须与工序写入同一事务提交。
+ * 返回作废条数。
+ */
+export async function voidTestsInTx(
+  table: Table<TimekeepingTest, string>,
+  clockId: string,
+  reason: string,
+): Promise<number> {
+  const now = Date.now();
+  let count = 0;
+  await table
+    .where('clockId')
+    .equals(clockId)
+    .modify((row) => {
+      if (!row.voided) {
+        row.voided = true;
+        row.voidedAt = now;
+        row.voidReason = reason;
+        count += 1;
+      }
+    });
+  return count;
+}
+
+/** 事务外单独作废某台钟表的有效走时测试 */
+export async function voidClockTests(clockId: string, reason: string): Promise<number> {
+  return db.transaction('rw', db.tests, () => voidTestsInTx(db.tests, clockId, reason));
 }
 
 /** 首次进入灌入示范数据，保证页面非空壳 */
@@ -173,6 +231,8 @@ export async function ensureSeedData(): Promise<void> {
       torque: 0.6,
       troubleNote: '条盒盖螺纹轻微锈死，用渗透油浸润后拆下',
       operator: '祁仲言',
+      claimOwner: '祁仲言',
+      claimedAt: now - 12 * day,
       startedAt: now - 12 * day,
       finishedAt: now - 12 * day + 80 * 60000,
       state: 'done',
@@ -190,6 +250,8 @@ export async function ensureSeedData(): Promise<void> {
       torque: 0,
       troubleNote: '宝石轴承孔内油泥结块，超声 3 遍',
       operator: '祁仲言',
+      claimOwner: '祁仲言',
+      claimedAt: now - 8 * day,
       startedAt: now - 8 * day,
       finishedAt: now - 8 * day + 45 * 60000,
       state: 'done',
@@ -207,6 +269,8 @@ export async function ensureSeedData(): Promise<void> {
       torque: 0,
       troubleNote: '',
       operator: '祁仲言',
+      // 待认领：两台修复台都可尝试交接，只有一人能接走
+      claimOwner: '',
       startedAt: now - 3 * day,
       state: 'pending',
     },
@@ -228,6 +292,7 @@ export async function ensureSeedData(): Promise<void> {
       ],
       powerReserve: 46,
       conclusion: '合格',
+      voided: false,
     },
   ];
 
