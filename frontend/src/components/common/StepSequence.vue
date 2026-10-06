@@ -13,6 +13,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'finish', id: string): void;
   (e: 'rollback', id: string): void;
+  (e: 'claim', row: RepairStep): void;
   (e: 'move', payload: { id: string; direction: 'up' | 'down' }): void;
   (e: 'reorder', payload: { fromId: string; toId: string }): void;
 }>();
@@ -21,6 +22,10 @@ const dragId = ref<string>('');
 
 const gaps = computed(() => findSeqGaps(props.items.map((it) => it.seq)));
 const conflict = computed(() => gaps.value.length > 0);
+
+function claimedAtText(row: RepairStep): string {
+  return row.claimedAt ? new Date(row.claimedAt).toLocaleString('zh-CN') : '—';
+}
 
 function onDragStart(id: string) {
   dragId.value = id;
@@ -44,20 +49,20 @@ function onDrop(toId: string) {
       style="margin-bottom: 10px"
     />
     <el-table :data="items" size="small" border>
-      <el-table-column label="顺序" width="80">
+      <el-table-column label="顺序" width="70">
         <template #default="{ row }">
           <span :class="{ gap: conflict && gaps.includes(row.seq) }">#{{ row.seq }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="步骤" width="110">
+      <el-table-column label="步骤" width="100">
         <template #default="{ row }">{{ row.stepType }}</template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态" width="90">
         <template #default="{ row }">
           <StateBadge :state="row.state" />
         </template>
       </el-table-column>
-      <el-table-column label="清洗/润滑" min-width="200">
+      <el-table-column label="清洗/润滑" min-width="180">
         <template #default="{ row }">
           <div v-if="row.cleanSolvent">清洗液：{{ row.cleanSolvent }}（{{ row.cleanMethod }}）</div>
           <div v-if="row.oilType">油脂：{{ row.oilType }} · 点位 {{ row.oilPoints }}</div>
@@ -65,14 +70,22 @@ function onDrop(toId: string) {
           <div v-if="!row.cleanSolvent && !row.oilType && !row.torque">—</div>
         </template>
       </el-table-column>
-      <el-table-column label="异常说明" min-width="160">
+      <el-table-column label="异常说明" min-width="140">
         <template #default="{ row }">{{ row.troubleNote || '—' }}</template>
       </el-table-column>
-      <el-table-column label="责任人" width="100">
+      <el-table-column label="责任人" width="90">
         <template #default="{ row }">{{ row.operator }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="250">
+      <el-table-column label="认领人" width="130">
+        <template #default="{ row }">
+          <el-tooltip :content="`认领于 ${claimedAtText(row)} · 交接版本 v${row.handoverVersion}`" placement="top">
+            <span :class="{ unclaimed: !row.claimedBy }">{{ row.claimedBy || '未认领' }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="330">
         <template #default="{ row, $index }">
+          <el-button size="small" type="primary" plain @click="emit('claim', row)">认领</el-button>
           <el-button v-if="row.state !== 'done'" size="small" type="primary" @click="emit('finish', row.id)">
             完成
           </el-button>
@@ -109,6 +122,9 @@ function onDrop(toId: string) {
 .gap {
   color: #d93025;
   font-weight: 700;
+}
+.unclaimed {
+  color: #97a0ad;
 }
 .drag-handle {
   margin-left: 8px;

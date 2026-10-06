@@ -40,9 +40,17 @@ export interface RepairStep {
   torque: number;
   troubleNote: string;
   operator: string;
+  /** 开始时间：交接认领不改变该值 */
   startedAt: number;
   finishedAt?: number;
   state: StepState;
+  /** 当前认领人：同一时刻只归一人，交接即换持有人 */
+  claimedBy: string;
+  /** 认领时间 */
+  claimedAt: number;
+  /** 交接版本号：每次交接 +1，认领时据此做乐观并发校验 */
+  handoverVersion: number;
 }
 
-export type RepairStepDraft = Omit<RepairStep, 'id'>;
+/** 新建草稿：认领字段由 store 在创建时落库（创建人即认领人） */
+export type RepairStepDraft = Omit<RepairStep, 'id' | 'claimedBy' | 'claimedAt' | 'handoverVersion'>;

@@ -35,6 +35,7 @@ cd frontend
 npm install
 npm run dev      # http://localhost:5173
 npm run build    # vue-tsc 类型检查 + vite 构建
+npm run smoke    # 并发/迁移/恢复冒烟：node + fake-indexeddb 跑真实 Dexie 事务（22 项断言）
 ```
 
 > 生产环境由 nginx 托管 `dist`，`nginx.conf` 已启用 `try_files $uri $uri/ /index.html;` 与 gzip。
@@ -58,12 +59,12 @@ sologsb-1120/
         ├── main.ts
         ├── App.vue
         ├── router/index.ts
-        ├── types/{clock,part,step,test}.ts
+        ├── types/{clock,part,step,test,handover}.ts
         ├── stores/{clock,part,step}Store.ts
         ├── components/common/{StepSequence,RateChart,ClockCard,StateBadge}.vue
         ├── hooks/{useClockSearch,useRepairProgress}.ts
         ├── pages/{ClockList,ClockDetail,StepForm,PartList,TestView}.vue
-        └── utils/{db,timeCalc,id}.ts
+        └── utils/{db,handover,sync,identity,timeCalc,id}.ts
 ```
 
 ## 页面与路由
@@ -80,15 +81,19 @@ sologsb-1120/
 
 ## 数据存储说明
 
-- 数据库名 `gbclockrepair`，当前结构版本 **v2**（`localStorage['gbclockrepair:db-version']` 记录）。
-- 四张表：`clocks`（钟表）、`parts`（机芯零件）、`steps`（维修工序）、`tests`（走时测试）。
+- 数据库名 `gbclockrepair`，当前结构版本 **v3**（`localStorage['gbclockrepair:db-version']` 记录）。
+- 五张表：`clocks`（钟表）、`parts`（机芯零件）、`steps`（维修工序）、`tests`（走时测试）、`handovers`（工序交接日志）。
 - v1 → v2 迁移：补齐老记录的 `state`、`partIds`、`torque`、`positions` 字段并新增索引。
+- v2 → v3 迁移：工序补 `claimedBy`/`claimedAt`/`handoverVersion`（**旧档案工序按原责任人补回认领人**，认领时间取开始时间）；走时测试补 `state`（旧记录记为 `valid`）；新增 `handovers` 交接日志表。
 - 容器无状态、不挂载命名卷；清空站点数据即回到初始示范数据。
 - 首次打开灌入 2 台示范钟表、3 项零件、3 道工序与 1 次走时测试。
 
 ## 功能要点
 
-- **顺序号不跳号**：新建工序时若顺序号大于「当前最大顺序号 + 1」直接报错并给出建议值；`<StepSequence>` 对缺口行标红。
+- **顺序号不跳号**：新建工序时若顺序号大于「当前最大顺序号 + 1」直接报错并给出建议值；`<StepSequence>` 对缺口行标红。顺序号在**事务内重读校验**，两台修复台同时保存时，后到的一边收到明确冲突而不是覆盖先写。
+- **工序认领互斥**：每道工序有唯一认领人（`claimedBy`）与交接版本号（`handoverVersion`）。认领走单事务乐观锁：同一时刻只有一个人能认领成功，**晚到的一边看到被谁接走**（持有人姓名与接走时间），且**开始时间不动**。另一台修复台通过 BroadcastChannel 实时刷新归属。
+- **交接可恢复**：认领前先落 `pending` 交接日志（outbox），写库失败或中途崩溃时标记 `failed`，启动时自动重放、台账页也可手动「恢复交接」，重放幂等。
+- **工序改动即复测**：工序新增 / 认领 / 完成 / 回退 / 调序都会在同一事务内把该钟表的有效走时测试作废（`stale`），台账分栏只认有效测试（作废后从「已完成」退回「待测试」），走时单标注「复测」，历史记录灰显「已作废」。
 - **工序排序**：支持「上移 / 下移」按钮与原生拖拽交换顺序，交换的是 `seq`。
 - **工序完成 / 回退**：完成后写 `finishedAt`，回退后计入待办与回退计数。
 - **双轴走时图**：`<RateChart>` 左轴日差 s/d、右轴摆幅 °，标注四方位读数与均值。

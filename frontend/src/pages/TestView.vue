@@ -6,7 +6,7 @@ import { useClockStore } from '../stores/clockStore';
 import { useStepStore } from '../stores/stepStore';
 import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
-import { TEST_POSITIONS, judgeTest, type PositionReading } from '../types/test';
+import { TEST_POSITIONS, judgeTest, type PositionReading, type TimekeepingTest } from '../types/test';
 import { amplitudeLevel, avgAmplitude, avgBeatError, avgRate, beatErrorLevel, rateLabel, ratePerDayToMonth } from '../utils/timeCalc';
 
 const route = useRoute();
@@ -17,6 +17,13 @@ const stepStore = useStepStore();
 const clockId = ref(String(route.params.clockId ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
+
+/** 最新一次测试已被工序改动作废 → 本次保存记为复测 */
+const needRetest = computed(() => tests.value.length > 0 && tests.value[0].state === 'stale');
+
+function testRowClass({ row }: { row: TimekeepingTest }): string {
+  return row.state === 'stale' ? 'stale-row' : '';
+}
 
 const readings = reactive<PositionReading[]>(
   TEST_POSITIONS.map((position) => ({ position, rate: 0, amplitude: 260, beatError: 0.4 })),
@@ -36,9 +43,12 @@ const conclusion = computed(() =>
 
 const workSheet = computed(() => {
   const lines: string[] = [];
-  lines.push('走时测试单');
+  lines.push(needRetest.value ? '走时测试单（复测）' : '走时测试单');
   lines.push(`藏品号：${clock.value?.clockNo ?? '未知'}（${clock.value?.kind ?? ''} / ${clock.value?.caliber ?? ''}）`);
   lines.push(`测试时间：${new Date().toLocaleString('zh-CN')}`);
+  if (needRetest.value) {
+    lines.push('说明：工序已变更，前次走时测试作废，本单为复测记录');
+  }
   lines.push('');
   lines.push('方位\t日差(s/d)\t摆幅(°)\t偏振(ms)');
   readings.forEach((r) => {
@@ -58,6 +68,7 @@ async function save() {
     ElMessage.error('未指定钟表');
     return;
   }
+  const wasRetest = needRetest.value;
   await stepStore.addTest({
     clockId: clockId.value,
     testedAt: Date.now(),
@@ -68,7 +79,7 @@ async function save() {
     powerReserve: powerReserve.value,
     conclusion: conclusion.value,
   });
-  ElMessage.success('走时测试已记录');
+  ElMessage.success(wasRetest ? '复测记录已保存，台账恢复有效测试' : '走时测试已记录');
 }
 
 async function copySheet() {
@@ -119,6 +130,15 @@ onMounted(async () => {
       <div class="spacer" />
       <el-button @click="router.push(`/clocks/${clockId}`)">返回钟表详情</el-button>
     </div>
+
+    <el-alert
+      v-if="needRetest"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="工序已变更，此前走时测试已作废，本次保存记为复测"
+      style="margin-bottom: 2px"
+    />
 
     <div class="grid">
       <el-card shadow="never">
@@ -194,7 +214,7 @@ onMounted(async () => {
 
         <el-card shadow="never">
           <template #header><strong>历史测试记录</strong></template>
-          <el-table :data="tests" size="small" border>
+          <el-table :data="tests" size="small" border :row-class-name="testRowClass">
             <el-table-column label="时间" width="170">
               <template #default="{ row }">{{ new Date(row.testedAt).toLocaleString('zh-CN') }}</template>
             </el-table-column>
@@ -202,7 +222,13 @@ onMounted(async () => {
             <el-table-column prop="amplitude" label="摆幅" width="80" />
             <el-table-column prop="beatError" label="偏振" width="80" />
             <el-table-column prop="powerReserve" label="动储 h" width="90" />
-            <el-table-column prop="conclusion" label="结论" min-width="120" />
+            <el-table-column prop="conclusion" label="结论" min-width="110" />
+            <el-table-column label="状态" width="110">
+              <template #default="{ row }">
+                <el-tag v-if="row.state === 'stale'" size="small" type="danger">已作废</el-tag>
+                <el-tag v-else size="small" type="success" effect="plain">有效</el-tag>
+              </template>
+            </el-table-column>
           </el-table>
           <el-empty v-if="tests.length === 0" description="暂无历史测试" :image-size="60" />
         </el-card>
@@ -259,5 +285,9 @@ onMounted(async () => {
 .card-head {
   display: flex;
   align-items: center;
+}
+:deep(.stale-row) {
+  color: #a8b0ba;
+  background: #fafbfc;
 }
 </style>

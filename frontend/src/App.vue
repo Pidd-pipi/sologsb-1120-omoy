@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { readDbVersion } from './utils/db';
+import { onChanged } from './utils/sync';
+import { useClockStore } from './stores/clockStore';
+import { usePartStore } from './stores/partStore';
+import { useStepStore } from './stores/stepStore';
 
 const route = useRoute();
 const router = useRouter();
@@ -23,6 +27,15 @@ function onSelect(index: string) {
   }
   void router.push(index);
 }
+
+// 另一台修复台（另一标签页）写入后，本台实时刷新，直接看到工序被谁接走
+onMounted(() => {
+  onChanged(() => {
+    void useClockStore().load();
+    void usePartStore().load();
+    void useStepStore().load();
+  });
+});
 </script>
 
 <template>

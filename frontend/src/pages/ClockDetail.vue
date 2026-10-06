@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
@@ -11,6 +11,9 @@ import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
 import { CONDITION_GRADES, type ConditionGrade } from '../types/clock';
 import { judgeTest } from '../types/test';
+import type { RepairStep } from '../types/step';
+import { HandoverConflictError } from '../utils/handover';
+import { getMe, setMe } from '../utils/identity';
 
 const route = useRoute();
 const router = useRouter();
@@ -25,13 +28,57 @@ const parts = computed(() => partStore.byClock(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
 const activeTab = ref('steps');
 
+const claimTarget = ref<RepairStep | null>(null);
+const claimName = ref('');
+const claiming = ref(false);
+
+function openClaim(row: RepairStep) {
+  claimTarget.value = row;
+  claimName.value = getMe() || row.claimedBy || row.operator;
+}
+
+async function doClaim() {
+  const target = claimTarget.value;
+  if (!target) return;
+  const name = claimName.value.trim();
+  if (!name) {
+    ElMessage.warning('请填写认领人');
+    return;
+  }
+  claiming.value = true;
+  try {
+    const updated = await stepStore.claim(target.id, name);
+    setMe(name);
+    claimTarget.value = null;
+    ElMessage.success(
+      `工序 #${updated.seq} 已由「${name}」认领，开始时间保持 ${new Date(updated.startedAt).toLocaleString('zh-CN')}`,
+    );
+  } catch (err) {
+    if (err instanceof HandoverConflictError) {
+      const when = err.holderClaimedAt ? new Date(err.holderClaimedAt).toLocaleString('zh-CN') : '—';
+      await ElMessageBox.alert(
+        `该工序已于 ${when} 被「${err.holder || '他人'}」接走，本次认领未生效。列表已刷新为最新归属。`,
+        '认领冲突',
+        { type: 'warning', confirmButtonText: '知道了' },
+      );
+      claimTarget.value = null;
+    } else {
+      ElMessage.error(
+        `认领写入失败：${err instanceof Error ? err.message : String(err)}。可到台账页点「恢复交接」重试，本次交接不会丢。`,
+      );
+    }
+  } finally {
+    claiming.value = false;
+  }
+}
+
 async function finish(id: string) {
   await stepStore.finish(id);
-  ElMessage.success('步骤已完成');
+  ElMessage.success('步骤已完成，既有走时测试已作废待复测');
 }
 async function rollback(id: string) {
   await stepStore.rollback(id);
-  ElMessage.warning('步骤已回退');
+  ElMessage.warning('步骤已回退，既有走时测试已作废待复测');
 }
 async function move(payload: { id: string; direction: 'up' | 'down' }) {
   const list = steps.value;
@@ -104,7 +151,7 @@ onMounted(async () => {
               <strong>修复进度</strong>
               <el-tag size="small">{{ done }}/{{ total }} · {{ percent }}%</el-tag>
               <span v-if="current" class="muted">
-                当前卡点：#{{ current.seq }} {{ current.stepType }}（{{ current.operator }}）
+                当前卡点：#{{ current.seq }} {{ current.stepType }}（认领人 {{ current.claimedBy || '未认领' }}）
               </span>
               <span v-else class="muted">全部步骤已完成</span>
             </div>
@@ -117,6 +164,7 @@ onMounted(async () => {
                 sortable
                 @finish="finish"
                 @rollback="rollback"
+                @claim="openClaim"
                 @move="move"
                 @reorder="reorder"
               />
@@ -133,10 +181,12 @@ onMounted(async () => {
               <el-empty v-if="parts.length === 0" description="暂无零件登记" :image-size="60" />
             </el-tab-pane>
             <el-tab-pane :label="`走时测试（${tests.length}）`" name="tests">
-              <div v-for="t in tests" :key="t.id" class="test-block">
+              <div v-for="t in tests" :key="t.id" class="test-block" :class="{ stale: t.state === 'stale' }">
                 <div class="card-head">
                   <strong>{{ new Date(t.testedAt).toLocaleString('zh-CN') }}</strong>
                   <el-tag size="small" type="success">{{ t.conclusion || judgeTest(t.rate, t.beatError, t.amplitude) }}</el-tag>
+                  <el-tag v-if="t.state === 'stale'" size="small" type="danger">已作废·需复测</el-tag>
+                  <el-tag v-else size="small" type="success" effect="plain">有效</el-tag>
                   <span class="muted">日差 {{ t.rate }} s/d · 摆幅 {{ t.amplitude }}° · 偏振 {{ t.beatError }} ms</span>
                 </div>
                 <RateChart :readings="t.positions" />
@@ -147,6 +197,34 @@ onMounted(async () => {
         </el-card>
       </div>
     </div>
+
+    <el-dialog :model-value="!!claimTarget" title="认领工序" width="460px" @close="claimTarget = null">
+      <template v-if="claimTarget">
+        <el-descriptions :column="1" border size="small" style="margin-bottom: 14px">
+          <el-descriptions-item label="工序">#{{ claimTarget.seq }} {{ claimTarget.stepType }}</el-descriptions-item>
+          <el-descriptions-item label="当前持有人">{{ claimTarget.claimedBy || '未认领' }}</el-descriptions-item>
+          <el-descriptions-item label="开始时间">
+            {{ new Date(claimTarget.startedAt).toLocaleString('zh-CN') }}（交接不改变开始时间）
+          </el-descriptions-item>
+        </el-descriptions>
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          title="同一时刻只有一人能认领成功；若他人刚接走，将提示实际持有人。"
+          style="margin-bottom: 14px"
+        />
+        <el-form label-width="80px">
+          <el-form-item label="认领人" required>
+            <el-input v-model="claimName" placeholder="填写认领人姓名" @keyup.enter="doClaim" />
+          </el-form-item>
+        </el-form>
+      </template>
+      <template #footer>
+        <el-button @click="claimTarget = null">取消</el-button>
+        <el-button type="primary" :loading="claiming" @click="doClaim">确认认领</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -195,5 +273,8 @@ onMounted(async () => {
 }
 .test-block {
   margin-bottom: 16px;
+}
+.test-block.stale {
+  opacity: 0.55;
 }
 </style>

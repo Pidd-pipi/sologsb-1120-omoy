@@ -17,13 +17,21 @@ const REPAIR_STATES = ['未开工', '维修中', '待测试', '已完成'] as co
 
 type RepairState = (typeof REPAIR_STATES)[number];
 
-/** 由工序与走时测试推导修复状态，用于台账分栏 */
+/** 该钟表是否有已作废、待复测的走时测试（工序改动触发） */
+function hasStaleTest(clockId: string): boolean {
+  const tests = stepStore.tests.filter((t) => t.clockId === clockId);
+  if (tests.length === 0) return false;
+  const latest = tests.reduce((a, b) => (a.testedAt >= b.testedAt ? a : b));
+  return latest.state === 'stale';
+}
+
+/** 由工序与走时测试推导修复状态，用于台账分栏；已作废的测试不计入 */
 function repairStateOf(clockId: string): RepairState {
   const steps = stepStore.items.filter((s) => s.clockId === clockId);
-  const tests = stepStore.tests.filter((t) => t.clockId === clockId);
+  const validTests = stepStore.tests.filter((t) => t.clockId === clockId && t.state !== 'stale');
   const done = steps.filter((s) => s.state === 'done').length;
   if (steps.length === 0) return '未开工';
-  if (done === steps.length && tests.length > 0) return '已完成';
+  if (done === steps.length && validTests.length > 0) return '已完成';
   if (done === steps.length) return '待测试';
   if (done > 0) return '维修中';
   return '未开工';
@@ -35,6 +43,20 @@ const columns = computed(() =>
     rows: result.value.filter((it) => repairStateOf(it.id) === state),
   })),
 );
+
+/** 待恢复的交接（写库失败/中断），台账顶部提示并可手动重放 */
+const pendingHandovers = computed(() => stepStore.pendingHandovers);
+
+async function recoverHandovers() {
+  const { recovered, failed } = await stepStore.recoverHandovers();
+  if (failed > 0) {
+    ElMessage.warning(`交接恢复完成：${recovered} 条已补上，${failed} 条仍失败（详见交接日志）`);
+  } else if (recovered > 0) {
+    ElMessage.success(`已恢复 ${recovered} 条交接`);
+  } else {
+    ElMessage.info('没有待恢复的交接');
+  }
+}
 
 const dialogVisible = ref(false);
 const form = reactive<ClockDraft>({
@@ -92,6 +114,18 @@ onMounted(() => {
       <el-button type="primary" @click="openDialog">建档</el-button>
     </div>
 
+    <el-alert
+      v-if="pendingHandovers.length > 0"
+      type="warning"
+      show-icon
+      :closable="false"
+      :title="`有 ${pendingHandovers.length} 条工序交接未写入成功，可恢复重放`"
+    >
+      <template #default>
+        <el-button size="small" type="warning" plain @click="recoverHandovers">恢复交接</el-button>
+      </template>
+    </el-alert>
+
     <el-card shadow="never" class="filters">
       <el-form :inline="true" @submit.prevent>
         <el-form-item label="藏品号/机芯">
@@ -145,7 +179,9 @@ onMounted(() => {
           :item="item"
           :footer="`工序 ${stepStore.items.filter((s) => s.clockId === item.id && s.state === 'done').length}/${
             stepStore.items.filter((s) => s.clockId === item.id).length
-          } · 走时测试 ${stepStore.tests.filter((t) => t.clockId === item.id).length} 次`"
+          } · 走时测试 ${stepStore.tests.filter((t) => t.clockId === item.id && t.state !== 'stale').length} 次${
+            hasStaleTest(item.id) ? ' · 前次测试已作废，需复测' : ''
+          }`"
           @open="(id) => router.push(`/clocks/${id}`)"
         />
         <el-empty v-if="col.rows.length === 0" description="暂无" :image-size="60" />

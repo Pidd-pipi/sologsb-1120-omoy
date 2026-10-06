@@ -14,6 +14,9 @@ export interface PositionReading {
   beatError: number;
 }
 
+/** 测试记录状态：工序一改动，既有有效测试即作废（stale）待复测 */
+export type TestState = 'valid' | 'stale';
+
 /** 走时测试记录 */
 export interface TimekeepingTest {
   id: string;
@@ -29,9 +32,16 @@ export interface TimekeepingTest {
   /** 动力储备 h */
   powerReserve: number;
   conclusion: string;
+  /** valid=有效；stale=已作废（工序变更后需复测） */
+  state: TestState;
+  /** 作废时间 */
+  invalidatedAt?: number;
+  /** 触发作废的工序 id */
+  invalidatedByStep?: string;
 }
 
-export type TimekeepingTestDraft = Omit<TimekeepingTest, 'id'>;
+/** 新建草稿：state 由 store 落库为 valid */
+export type TimekeepingTestDraft = Omit<TimekeepingTest, 'id' | 'state' | 'invalidatedAt' | 'invalidatedByStep'>;
 
 /** 走时合格判定 */
 export function judgeTest(rate: number, beatError: number, amplitude: number): string {

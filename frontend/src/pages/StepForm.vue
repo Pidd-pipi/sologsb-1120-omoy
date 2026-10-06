@@ -8,6 +8,7 @@ import { useStepStore } from '../stores/stepStore';
 import { useRepairProgress } from '../hooks/useRepairProgress';
 import StepSequence from '../components/common/StepSequence.vue';
 import { STEP_FIELD_MAP, STEP_TYPES, type RepairStepDraft, type StepType } from '../types/step';
+import { getMe, setMe } from '../utils/identity';
 
 const route = useRoute();
 const router = useRouter();
@@ -75,11 +76,17 @@ async function submit() {
     error.value = `顺序号跳号：当前最大顺序号为 ${Math.max(0, nextSeq.value - 1)}，新步骤必须用 ${nextSeq.value}`;
     return;
   }
-  const created = await stepStore.add({ ...form, clockId: clockId.value, startedAt: Date.now() });
-  ElMessage.success(`已追加步骤 #${created.seq} ${created.stepType}`);
-  form.operator = '';
-  form.troubleNote = '';
-  form.partIds = [];
+  try {
+    const operator = form.operator.trim();
+    const created = await stepStore.add({ ...form, operator, clockId: clockId.value, startedAt: Date.now() });
+    setMe(operator);
+    ElMessage.success(`已追加步骤 #${created.seq} ${created.stepType}，认领人「${operator}」`);
+    form.troubleNote = '';
+    form.partIds = [];
+  } catch (err) {
+    // 两台修复台同时保存时，后到的一边在此收到明确冲突（顺序号被占/跳号）
+    error.value = err instanceof Error ? err.message : String(err);
+  }
 }
 
 async function finish(id: string) {
@@ -98,6 +105,8 @@ onMounted(async () => {
   if (!clockId.value && clockStore.items.length > 0) {
     clockId.value = clockStore.items[0].id;
   }
+  // 默认认领人为本机登记的修复师（两台修复台各设各的）
+  if (!form.operator) form.operator = getMe();
 });
 </script>
 
@@ -171,6 +180,7 @@ onMounted(async () => {
           </el-form-item>
           <el-form-item label="责任人" required>
             <el-input v-model="form.operator" />
+            <span class="hint">保存后即为该工序认领人，他人认领需走交接</span>
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="submit">保存步骤</el-button>

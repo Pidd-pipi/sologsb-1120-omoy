@@ -3,10 +3,11 @@ import type { Clock } from '../types/clock';
 import type { MovementPart } from '../types/part';
 import type { RepairStep } from '../types/step';
 import type { TimekeepingTest } from '../types/test';
+import type { HandoverRecord } from '../types/handover';
 import { newId } from './id';
 
 export const DB_NAME = 'gbclockrepair';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbclockrepair:db-version';
 
 class ClockRepairDB extends Dexie {
@@ -14,6 +15,7 @@ class ClockRepairDB extends Dexie {
   parts!: Table<MovementPart, string>;
   steps!: Table<RepairStep, string>;
   tests!: Table<TimekeepingTest, string>;
+  handovers!: Table<HandoverRecord, string>;
 
   constructor() {
     super(DB_NAME);
@@ -46,6 +48,32 @@ class ClockRepairDB extends Dexie {
           .toCollection()
           .modify((row: any) => {
             if (row.positions === undefined) row.positions = [];
+          });
+      });
+    // v3：工序认领与交接日志；旧档案工序按原责任人补回认领人，旧测试记为有效
+    this.version(3)
+      .stores({
+        clocks: 'id, clockNo, kind, caliber, conditionGrade, createdAt',
+        parts: 'id, clockId, name, wearState, decision, sourceLot',
+        steps: 'id, clockId, seq, stepType, state, startedAt, claimedBy',
+        tests: 'id, clockId, testedAt, conclusion, state',
+        handovers: 'id, stepId, clockId, status, createdAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('steps')
+          .toCollection()
+          .modify((row: any) => {
+            // 老档案没有认领人：按原责任人补回，认领时间取开始时间
+            if (row.claimedBy === undefined) row.claimedBy = row.operator ?? '';
+            if (row.claimedAt === undefined) row.claimedAt = row.startedAt ?? Date.now();
+            if (row.handoverVersion === undefined) row.handoverVersion = 1;
+          });
+        await tx
+          .table('tests')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.state === undefined) row.state = 'valid';
           });
       });
   }
@@ -176,6 +204,9 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 12 * day,
       finishedAt: now - 12 * day + 80 * 60000,
       state: 'done',
+      claimedBy: '祁仲言',
+      claimedAt: now - 12 * day,
+      handoverVersion: 1,
     },
     {
       id: newId('stp'),
@@ -193,6 +224,9 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 8 * day,
       finishedAt: now - 8 * day + 45 * 60000,
       state: 'done',
+      claimedBy: '祁仲言',
+      claimedAt: now - 8 * day,
+      handoverVersion: 1,
     },
     {
       id: newId('stp'),
@@ -209,6 +243,9 @@ export async function ensureSeedData(): Promise<void> {
       operator: '祁仲言',
       startedAt: now - 3 * day,
       state: 'pending',
+      claimedBy: '祁仲言',
+      claimedAt: now - 3 * day,
+      handoverVersion: 1,
     },
   ];
 
@@ -228,6 +265,7 @@ export async function ensureSeedData(): Promise<void> {
       ],
       powerReserve: 46,
       conclusion: '合格',
+      state: 'valid',
     },
   ];
 
